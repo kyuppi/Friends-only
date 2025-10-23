@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>友達と通話</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 50px; }
+    input { margin: 5px; padding: 5px; }
+    button { margin: 10px; padding: 8px 15px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h1>友達と音声通話</h1>
+
+  <p>① 自分が「部屋」を作るなら「Create Room」を押す</p>
+  <p>② 友達は出てきた「Room ID」を入力して「Join Room」を押す</p>
+
+  <button id="createBtn">Create Room</button>
+  <input id="roomIdInput" placeholder="Room ID" />
+  <button id="joinBtn">Join Room</button>
+
+  <h3 id="roomInfo"></h3>
+  <audio id="remoteAudio" autoplay></audio>
+
+  <script type="module">
+    // Firebase設定
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import { getDatabase, ref, set, get, onValue, remove } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBjz4Hy3219is1DzpBcC4aynentrhbGdGU",
+      authDomain: "friends-only-b979c.firebaseapp.com",
+      databaseURL: "https://friends-only-b979c-default-rtdb.firebaseio.com",
+      projectId: "friends-only-b979c",
+      storageBucket: "friends-only-b979c.firebasestorage.app",
+      messagingSenderId: "158586138885",
+      appId: "1:158586138885:web:b5515754ccbc3ee9dd876c",
+      measurementId: "G-0TS6MJD52X"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    const createBtn = document.getElementById("createBtn");
+    const joinBtn = document.getElementById("joinBtn");
+    const roomIdInput = document.getElementById("roomIdInput");
+    const roomInfo = document.getElementById("roomInfo");
+    const remoteAudio = document.getElementById("remoteAudio");
+
+    let pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+
+    pc.ontrack = (event) => {
+      remoteAudio.srcObject = event.streams[0];
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        const roomId = roomIdInput.value;
+        const candRef = ref(db, `rooms/${roomId}/candidates/${pc.localDescription.type}`);
+        set(candRef, event.candidate.toJSON());
+      }
+    };
+
+    async function openMic() {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    }
+
+    createBtn.onclick = async () => {
+      await openMic();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const roomId = Math.random().toString(36).substring(2, 8);
+      roomIdInput.value = roomId;
+      roomInfo.textContent = `Room ID: ${roomId}`;
+      await set(ref(db, `rooms/${roomId}/offer`), offer);
+    };
+
+    joinBtn.onclick = async () => {
+      await openMic();
+      const roomId = roomIdInput.value.trim();
+      if (!roomId) return alert("Room IDを入力してね！");
+      const roomRef = ref(db, `rooms/${roomId}/offer`);
+      const snapshot = await get(roomRef);
+      if (!snapshot.exists()) return alert("Roomが存在しません");
+
+      const offer = snapshot.val();
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await set(ref(db, `rooms/${roomId}/answer`), answer);
+
+      // Answer後に候補を監視
+      onValue(ref(db, `rooms/${roomId}/candidates/offer`), async (snap) => {
+        const candidate = snap.val();
+        if (candidate) await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      });
+    };
+
+    // ルーム作成者側でAnswerを監視
+    onValue(ref(db, `rooms/`), async (snap) => {
+      const rooms = snap.val();
+      if (!rooms) return;
+      for (const [roomId, data] of Object.entries(rooms)) {
+        if (data.answer && pc.signalingState === "have-local-offer") {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          const candRef = ref(db, `rooms/${roomId}/candidates/answer`);
+          onValue(candRef, async (snap2) => {
+            const candidate = snap2.val();
+            if (candidate) await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          });
+        }
+      }
+    });
+  </script>
+</body>
+</html>
